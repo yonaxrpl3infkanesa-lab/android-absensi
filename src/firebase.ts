@@ -20,6 +20,7 @@ type StudentDoc = Partial<UserProfile> & {
   jurusan?: string;
   tanggalLahir?: string;
   telepon?: string;
+  alamat?: string;
 };
 
 const getUsersCollection = () => firestore().collection(USERS_COLLECTION);
@@ -211,7 +212,12 @@ const mapStudent = (
         : typeof data.telepon === 'string'
           ? data.telepon
           : undefined,
-    address: typeof data.address === 'string' ? data.address : undefined,
+    address:
+      typeof data.address === 'string'
+        ? data.address
+        : typeof data.alamat === 'string'
+          ? data.alamat
+          : undefined,
     avatar: typeof data.avatar === 'string' ? data.avatar : undefined,
   };
 };

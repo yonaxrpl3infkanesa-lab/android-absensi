@@ -1,6 +1,7 @@
 import {useEffect, useMemo, useState} from 'react';
 import {
   ActivityIndicator,
+  BackHandler,
   Image,
   Modal,
   Pressable,
@@ -16,6 +17,11 @@ import {
   Platform,
 } from 'react-native';
 import {getApp} from '@react-native-firebase/app';
+import {
+  NavigationContainer,
+  createNavigationContainerRef,
+} from '@react-navigation/native';
+import {createNativeStackNavigator} from '@react-navigation/native-stack';
 import {SafeAreaProvider} from 'react-native-safe-area-context';
 
 import {
@@ -112,7 +118,11 @@ const TAB_ITEMS = [
 ] as const;
 
 type TabKey = (typeof TAB_ITEMS)[number]['key'];
-type AttendanceRoute = 'checkin' | 'checkout' | null;
+type AttendanceMode = 'checkin' | 'checkout';
+type RootStackParamList = {
+  MainTabs: undefined;
+  AttendanceAction: {mode: AttendanceMode};
+};
 
 type DailyHistory = {
   id: string;
@@ -124,6 +134,9 @@ type DailyHistory = {
   status: AttendanceRecord['status'];
   photoUri: string | null;
 };
+
+const Stack = createNativeStackNavigator<RootStackParamList>();
+const navigationRef = createNavigationContainerRef<RootStackParamList>();
 
 const getDayKey = (date: Date) => {
   const dayIndex = date.getDay();
@@ -282,7 +295,6 @@ function App() {
   const [settings, setSettings] = useState<AttendanceSettings>(
     DEFAULT_ATTENDANCE_SETTINGS,
   );
-  const [attendanceRoute, setAttendanceRoute] = useState<AttendanceRoute>(null);
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -354,7 +366,6 @@ function App() {
         if (!profile) {
           setCurrentUser(null);
           setHistory([]);
-          setAttendanceRoute(null);
           clearSessionNisn().catch(() => undefined);
           return;
         }
@@ -458,6 +469,41 @@ function App() {
       unsubscribe();
     };
   }, []);
+
+  useEffect(() => {
+    const subscription = BackHandler.addEventListener(
+      'hardwareBackPress',
+      () => {
+        if (!currentUser) {
+          return false;
+        }
+
+        if (selectedPhotoUri) {
+          setSelectedPhotoUri(null);
+          return true;
+        }
+
+        if (calendarVisible) {
+          setCalendarVisible(false);
+          return true;
+        }
+
+        if (navigationRef.isReady() && navigationRef.canGoBack()) {
+          navigationRef.goBack();
+          return true;
+        }
+
+        if (activeTab !== 'home') {
+          setActiveTab('home');
+          return true;
+        }
+
+        return false;
+      },
+    );
+
+    return () => subscription.remove();
+  }, [activeTab, calendarVisible, currentUser, selectedPhotoUri]);
 
   const groupedHistory = useMemo<DailyHistory[]>(() => {
     if (history.some(item => item.date || item.checkInTime || item.checkOutTime)) {
@@ -609,7 +655,6 @@ function App() {
     setHistory([]);
     setErrorMessage(null);
     setActiveTab('home');
-    setAttendanceRoute(null);
   };
 
   const renderHeaderBar = () => (
@@ -755,7 +800,10 @@ function App() {
               styles.checkInButton,
               pressed && styles.buttonPressed,
             ]}
-            onPress={() => setAttendanceRoute('checkin')}>
+            onPress={() =>
+              navigationRef.isReady() &&
+              navigationRef.navigate('AttendanceAction', {mode: 'checkin'})
+            }>
             <Clock size={36} color={Colors.white} />
             <Text style={styles.attendanceBtnTitle}>Datang</Text>
             <Text style={styles.attendanceBtnSub}>Absen Datang</Text>
@@ -766,7 +814,10 @@ function App() {
               styles.checkOutButton,
               pressed && styles.buttonPressed,
             ]}
-            onPress={() => setAttendanceRoute('checkout')}>
+            onPress={() =>
+              navigationRef.isReady() &&
+              navigationRef.navigate('AttendanceAction', {mode: 'checkout'})
+            }>
             <Clock size={36} color={Colors.white} />
             <Text style={styles.attendanceBtnTitle}>Pulang</Text>
             <Text style={styles.attendanceBtnSub}>Absen Pulang</Text>
@@ -1011,32 +1062,45 @@ function App() {
     );
   }
 
+  const renderMainTabsScreen = () => (
+    <>
+      {activeTab === 'home'
+        ? renderDashboard()
+        : activeTab === 'history'
+          ? renderHistory()
+          : renderProfile()}
+      {renderBottomTabs()}
+    </>
+  );
+
   return (
     <SafeAreaProvider>
       <SafeAreaView style={styles.appRoot}>
         {!currentUser ? (
           renderLoginScreen()
-        ) : attendanceRoute ? (
-          <AttendanceActionScreen
-            currentUser={currentUser}
-            isAdmin={false}
-            mode={attendanceRoute}
-            settings={settings}
-            onBack={() => setAttendanceRoute(null)}
-            onSaved={() => {
-              setAttendanceRoute(null);
-              setActiveTab('history');
-            }}
-          />
         ) : (
-          <>
-            {activeTab === 'home'
-              ? renderDashboard()
-              : activeTab === 'history'
-                ? renderHistory()
-                : renderProfile()}
-            {renderBottomTabs()}
-          </>
+          <NavigationContainer ref={navigationRef} key={currentUser.nisn}>
+            <Stack.Navigator screenOptions={{headerShown: false}}>
+              <Stack.Screen name="MainTabs">
+                {renderMainTabsScreen}
+              </Stack.Screen>
+              <Stack.Screen name="AttendanceAction">
+                {({navigation, route}) => (
+                  <AttendanceActionScreen
+                    currentUser={currentUser}
+                    isAdmin={false}
+                    mode={route.params.mode}
+                    settings={settings}
+                    onBack={() => navigation.goBack()}
+                    onSaved={() => {
+                      setActiveTab('history');
+                      navigation.goBack();
+                    }}
+                  />
+                )}
+              </Stack.Screen>
+            </Stack.Navigator>
+          </NavigationContainer>
         )}
 
         <Modal
