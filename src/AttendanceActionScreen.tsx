@@ -30,7 +30,16 @@ import {
 import {useSafeAreaInsets} from 'react-native-safe-area-context';
 
 import {AttendanceSettings, submitAttendance} from './firebase';
+import {
+  buildDateKey,
+  formatDateShort,
+  getAttendanceBlockedMessage,
+  getAttendanceScheduleLines,
+  getAttendanceWindow,
+  type HolidayInfo,
+} from './attendanceUtils';
 import CustomModal from './CustomModal';
+import {getNationalHolidayInfo} from './holidayService';
 import {CapturedPhoto, UserProfile} from './types';
 
 const Colors = {
@@ -74,95 +83,6 @@ const MAP_EDGE_PADDING = {
   left: 32,
 };
 const RECENTER_RADIUS_METERS = 300;
-
-const getDayKey = (date: Date) => {
-  const dayIndex = date.getDay();
-
-  switch (dayIndex) {
-    case 1:
-      return 'senin';
-    case 2:
-      return 'selasa';
-    case 3:
-      return 'rabu';
-    case 4:
-      return 'kamis';
-    case 5:
-      return 'jumat';
-    case 6:
-      return 'sabtu';
-    default:
-      return 'minggu';
-  }
-};
-
-const timeStringToMinutes = (value: string | null | undefined): number => {
-  if (!value || !value.includes(':')) {
-    return 0;
-  }
-
-  const [hours, minutes] = value.split(':').map(Number);
-  return hours * 60 + minutes;
-};
-
-const formatScheduleTime = (value: string | null | undefined): string =>
-  value ? value.replace(':', '.') : '-';
-
-const formatDateShort = (date: Date) => {
-  const months = [
-    'Januari',
-    'Februari',
-    'Maret',
-    'April',
-    'Mei',
-    'Juni',
-    'Juli',
-    'Agustus',
-    'September',
-    'Oktober',
-    'November',
-    'Desember',
-  ];
-
-  return `${date.getDate()} ${months[date.getMonth()]} ${date.getFullYear()}`;
-};
-
-const getAttendanceWindow = (settings: AttendanceSettings, now: Date = new Date()) => {
-  const dayKey = getDayKey(now);
-  const schedule = settings.weeklySchedule[dayKey];
-
-  if (!schedule?.isActive || !schedule.checkIn || !schedule.checkOut) {
-    return {
-      dayKey,
-      schedule,
-      isOffDay: true,
-      withinHours: false,
-      isLate: false,
-    };
-  }
-
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
-  const startMinutes = timeStringToMinutes(schedule.checkIn);
-  const endMinutes = timeStringToMinutes(schedule.checkOut);
-
-  if (currentMinutes < startMinutes || currentMinutes > endMinutes) {
-    return {
-      dayKey,
-      schedule,
-      isOffDay: false,
-      withinHours: false,
-      isLate: false,
-    };
-  }
-
-  return {
-    dayKey,
-    schedule,
-    isOffDay: false,
-    withinHours: true,
-    isLate: currentMinutes > startMinutes,
-  };
-};
 
 const isWithinAllowedRadius = (
   latitude: number,
@@ -210,18 +130,22 @@ export default function AttendanceActionScreen({
   const [modalVisible, setModalVisible] = useState(false);
   const [modalType, setModalType] = useState<'success' | 'error' | 'warning'>('success');
   const [modalTitle, setModalTitle] = useState('');
+  const [holidayInfo, setHolidayInfo] = useState<HolidayInfo | null>(null);
   const [isCameraReady, setIsCameraReady] = useState(false);
   const [flashVisible, setFlashVisible] = useState(false);
   const today = new Date();
-  const attendanceWindow = getAttendanceWindow(settings, today);
+  const todayKey = buildDateKey(today);
+  const attendanceWindow = getAttendanceWindow(settings, today, holidayInfo);
   const radiusLatitudeDelta = (settings.radiusMeters / 111000) * 3.2;
   const radiusLongitudeDelta =
     radiusLatitudeDelta / Math.max(Math.cos((settings.location.latitude * Math.PI) / 180), 0.2);
-  const activeScheduleLabel = attendanceWindow.isOffDay
-    ? 'Libur'
-    : `${formatScheduleTime(attendanceWindow.schedule?.checkIn)} - ${formatScheduleTime(
-        attendanceWindow.schedule?.checkOut,
-      )}`;
+  const activeScheduleLines = useMemo(
+    () =>
+      attendanceWindow.holiday.isNationalHoliday
+        ? ['Hari Libur Nasional']
+        : getAttendanceScheduleLines(attendanceWindow.schedule),
+    [attendanceWindow.holiday.isNationalHoliday, attendanceWindow.schedule],
+  );
 
   const title =
     mode === 'checkout' ? 'Lokasi Absen Pulang' : 'Lokasi Absen Datang';
@@ -384,6 +308,26 @@ export default function AttendanceActionScreen({
   }, [getLocation]);
 
   useEffect(() => {
+    let isMounted = true;
+
+    getNationalHolidayInfo(todayKey)
+      .then(result => {
+        if (isMounted) {
+          setHolidayInfo(result);
+        }
+      })
+      .catch(() => {
+        if (isMounted) {
+          setHolidayInfo(null);
+        }
+      });
+
+    return () => {
+      isMounted = false;
+    };
+  }, [todayKey]);
+
+  useEffect(() => {
     if (!hasCameraPermission && canRequestPermission) {
       requestPermission().catch(() => undefined);
     }
@@ -441,10 +385,12 @@ export default function AttendanceActionScreen({
     userLocation,
   ]);
 
-  const handlePhotoCaptured = useCallback(async (photoAsset: CapturedPhoto) => {
+  const handlePhotoCaptured = useCallback(async (
+    photoAsset: CapturedPhoto,
+    resolvedStatus: 'hadir' | 'terlambat' = 'hadir',
+  ) => {
     setLoading(true);
-    const status =
-      mode === 'checkin' && attendanceWindow.isLate ? 'terlambat' : 'hadir';
+    const status = mode === 'checkin' ? resolvedStatus : 'hadir';
 
     try {
       await submitAttendance(currentUser, photoAsset, {
@@ -457,7 +403,7 @@ export default function AttendanceActionScreen({
       setModalTitle(
         mode === 'checkout'
           ? 'Sukses kirim data absensi pulang'
-          : attendanceWindow.isLate
+          : status === 'terlambat'
             ? 'Absensi datang tersimpan sebagai terlambat'
             : 'Sukses kirim data absensi',
       );
@@ -471,7 +417,7 @@ export default function AttendanceActionScreen({
     } finally {
       setLoading(false);
     }
-  }, [attendanceWindow.isLate, currentUser, mode]);
+  }, [currentUser, mode]);
 
   const handleModalClose = useCallback(() => {
     const shouldCloseScreen =
@@ -485,18 +431,30 @@ export default function AttendanceActionScreen({
 
   const handleSubmit = useCallback(async () => {
     try {
-      if (!isAdmin && attendanceWindow.isOffDay) {
+      const latestWindow = getAttendanceWindow(settings, new Date(), holidayInfo);
+
+      if (!isAdmin && latestWindow.isOffDay) {
         setModalType('warning');
-        setModalTitle(
-          mode === 'checkout'
-            ? 'Hari ini libur, user tidak perlu absen pulang.'
-            : 'Hari ini libur, user tidak perlu absen datang.',
-        );
+        setModalTitle(getAttendanceBlockedMessage(latestWindow, mode));
         setModalVisible(true);
         return;
       }
 
-      if (!attendanceWindow.withinHours && !isAdmin) {
+      if (!isAdmin) {
+        const blockedMessage = getAttendanceBlockedMessage(latestWindow, mode);
+
+        if (
+          (mode === 'checkin' && !latestWindow.canCheckIn) ||
+          (mode === 'checkout' && !latestWindow.canCheckOut)
+        ) {
+          setModalType('warning');
+          setModalTitle(blockedMessage || 'Mohon cek jadwal presensi.');
+          setModalVisible(true);
+          return;
+        }
+      }
+
+      if (!latestWindow.withinHours && !isAdmin) {
         setModalType('warning');
         setModalTitle('Mohon Cek Jam Presensi');
         setModalVisible(true);
@@ -586,7 +544,7 @@ export default function AttendanceActionScreen({
         originalPath: photoFile.filePath,
         fileName,
         type: 'image/jpeg',
-      });
+      }, latestWindow.attendanceStatus ?? 'hadir');
     } catch (error) {
       setFlashVisible(false);
       setLoading(false);
@@ -597,12 +555,11 @@ export default function AttendanceActionScreen({
       setModalVisible(true);
     }
   }, [
-    attendanceWindow.isOffDay,
-    attendanceWindow.withinHours,
     cameraDevice,
     canRequestPermission,
     hasCameraPermission,
     handlePhotoCaptured,
+    holidayInfo,
     isCameraReady,
     isAdmin,
     locationError,
@@ -613,10 +570,10 @@ export default function AttendanceActionScreen({
     userLocation,
   ]);
 
-  const infoValue = useMemo(
+  const infoValueLines = useMemo(
     () =>
-      isAdmin && attendanceWindow.isOffDay ? 'Admin Override' : activeScheduleLabel,
-    [activeScheduleLabel, attendanceWindow.isOffDay, isAdmin],
+      isAdmin && attendanceWindow.isOffDay ? ['Admin Override'] : activeScheduleLines,
+    [activeScheduleLines, attendanceWindow.isOffDay, isAdmin],
   );
 
   return (
@@ -749,7 +706,13 @@ export default function AttendanceActionScreen({
               <Clock size={14} color={Colors.textSecondary} />
               <Text style={styles.infoLabel}>Jam Kerja</Text>
             </View>
-            <Text style={styles.infoValue}>{infoValue}</Text>
+            <View style={styles.infoValueBlock}>
+              {infoValueLines.map(line => (
+                <Text key={line} style={styles.infoValue}>
+                  {line}
+                </Text>
+              ))}
+            </View>
           </View>
         </View>
 
@@ -776,6 +739,17 @@ export default function AttendanceActionScreen({
                 </Pressable>
               ) : null}
             </View>
+          </View>
+        ) : null}
+
+        {attendanceWindow.holiday.isNationalHoliday ? (
+          <View style={[styles.locationStatusCard, styles.holidayStatusCard]}>
+            <Text style={styles.locationStatusTitle}>Hari Libur Nasional</Text>
+            <Text style={styles.locationStatusText}>
+              {attendanceWindow.holiday.name
+                ? `Hari ini libur nasional: ${attendanceWindow.holiday.name}.`
+                : 'Presensi tidak bisa dilakukan hari ini.'}
+            </Text>
           </View>
         ) : null}
 
@@ -988,11 +962,16 @@ const styles = StyleSheet.create({
     fontSize: 12,
     color: Colors.textSecondary,
   },
+  infoValueBlock: {
+    marginLeft: 19,
+    marginTop: 2,
+    gap: 2,
+  },
   infoValue: {
-    fontSize: 15,
+    fontSize: 14,
     fontWeight: '600',
     color: Colors.text,
-    marginLeft: 19,
+    lineHeight: 19,
   },
   locationStatusCard: {
     backgroundColor: '#FEF2F2',
@@ -1012,6 +991,10 @@ const styles = StyleSheet.create({
     fontSize: 13,
     lineHeight: 19,
     color: '#7F1D1D',
+  },
+  holidayStatusCard: {
+    backgroundColor: '#FEFCE8',
+    borderColor: '#FDE68A',
   },
   locationActionRow: {
     flexDirection: 'row',

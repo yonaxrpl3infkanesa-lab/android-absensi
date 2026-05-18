@@ -1,6 +1,7 @@
-import {useEffect, useMemo, useState} from 'react';
+import {useEffect, useMemo, useRef, useState} from 'react';
 import {
   ActivityIndicator,
+  Animated,
   BackHandler,
   Image,
   Modal,
@@ -55,6 +56,18 @@ import {
   validateStudentLogin,
 } from './src/firebase';
 import AttendanceActionScreen from './src/AttendanceActionScreen';
+import {
+  getAttendanceScheduleLines,
+  buildDateKey,
+  getDayKey,
+  getAttendanceWindow,
+  isScheduleConfigured,
+  timeStringToMinutes,
+} from './src/attendanceUtils';
+import {
+  getNationalHolidaysByMonth,
+  type NationalHolidayItem,
+} from './src/holidayService';
 import {
   clearSessionNisn,
   loadSessionNisn,
@@ -132,84 +145,162 @@ type DailyHistory = {
   checkInTime: string | null;
   checkOutTime: string | null;
   status: AttendanceRecord['status'];
-  photoUri: string | null;
+  checkInPhotoUri: string | null;
+  checkOutPhotoUri: string | null;
+};
+
+type HolidayMap = Record<string, NationalHolidayItem>;
+type SelectedPhotoSet = {
+  dateLabel: string;
+  checkInPhotoUri: string | null;
+  checkOutPhotoUri: string | null;
+};
+
+type CalendarDayTone = 'national' | 'collective' | 'weekend' | 'default';
+
+const getHolidayTypeLabel = (holiday: NationalHolidayItem) =>
+  holiday.isNationalHoliday ? 'Libur Nasional' : 'Cuti Bersama';
+
+const getHolidayDescription = (holiday: NationalHolidayItem) => {
+  const name = holiday.name.toLowerCase();
+
+  if (name.includes('cuti bersama')) {
+    return 'Hari libur tambahan untuk memberi ruang istirahat, kebersamaan keluarga, dan kelancaran perayaan.';
+  }
+
+  if (name.includes('hari buruh')) {
+    return 'Momentum perjuangan hak pekerja dan solidaritas buruh internasional.';
+  }
+
+  if (name.includes('hari lahir pancasila')) {
+    return 'Momen memperingati lahirnya Pancasila sebagai dasar negara dan pemersatu bangsa.';
+  }
+
+  if (name.includes('kemerdekaan republik indonesia') || name.includes('hari kemerdekaan')) {
+    return 'Peringatan kemerdekaan Indonesia yang menumbuhkan semangat persatuan, perjuangan, dan cinta tanah air.';
+  }
+
+  if (name.includes('tahun baru masehi')) {
+    return 'Momen pergantian tahun yang identik dengan harapan, evaluasi, dan awal baru.';
+  }
+
+  if (name.includes('imlek') || name.includes('cina')) {
+    return 'Perayaan tahun baru bagi masyarakat Tionghoa yang sarat doa, harapan, dan kebersamaan keluarga.';
+  }
+
+  if (name.includes('cap go meh')) {
+    return 'Penutup rangkaian Tahun Baru Imlek yang identik dengan syukur, tradisi, dan kebersamaan.';
+  }
+
+  if (name.includes('nyepi')) {
+    return 'Hari suci umat Hindu yang dimaknai sebagai waktu hening, refleksi, dan penyucian diri.';
+  }
+
+  if (name.includes('galungan')) {
+    return 'Perayaan kemenangan dharma melawan adharma dalam tradisi Hindu Bali.';
+  }
+
+  if (name.includes('kuningan')) {
+    return 'Hari suci umat Hindu Bali sebagai penutup rangkaian Galungan dan penghormatan kepada leluhur.';
+  }
+
+  if (name.includes('waisak')) {
+    return 'Perayaan suci umat Buddha untuk memperingati kelahiran, pencerahan, dan parinibbana Buddha.';
+  }
+
+  if (name.includes('asadha')) {
+    return 'Peringatan penting umat Buddha yang menandai awal penyebaran ajaran Dharma.';
+  }
+
+  if (name.includes('isra mikraj')) {
+    return 'Peringatan perjalanan spiritual Nabi Muhammad SAW yang sarat makna iman.';
+  }
+
+  if (name.includes('ramadan') || name.includes('awal puasa')) {
+    return 'Penanda dimulainya bulan suci Ramadan sebagai momen ibadah, pengendalian diri, dan kepedulian sosial.';
+  }
+
+  if (name.includes('nuzulul quran')) {
+    return 'Peringatan turunnya Al-Quran sebagai petunjuk hidup bagi umat Islam.';
+  }
+
+  if (name.includes('idul fitri')) {
+    return 'Perayaan kemenangan setelah Ramadan dan momen silaturahmi bersama keluarga.';
+  }
+
+  if (name.includes('idul adha')) {
+    return 'Hari raya kurban yang meneguhkan keikhlasan, ibadah, dan kepedulian sosial.';
+  }
+
+  if (name.includes('tahun baru islam') || name.includes('1 muharram')) {
+    return 'Penanda pergantian tahun Hijriah dan momen refleksi bagi umat Islam.';
+  }
+
+  if (name.includes('maulid nabi')) {
+    return 'Peringatan kelahiran Nabi Muhammad SAW sebagai momen meneladani akhlaknya.';
+  }
+
+  if (name.includes('kelahiran yesus kristus') || name.includes('natal')) {
+    return 'Perayaan kelahiran Yesus Kristus yang membawa pesan damai, kasih, dan sukacita.';
+  }
+
+  if (name.includes('wafat yesus kristus')) {
+    return 'Peringatan pengorbanan Yesus Kristus yang dimaknai dengan khidmat oleh umat Kristiani.';
+  }
+
+  if (name.includes('kenaikan yesus kristus')) {
+    return 'Peringatan kenaikan Yesus Kristus ke surga dalam tradisi Kristiani.';
+  }
+
+  if (name.includes('paskah')) {
+    return 'Perayaan kebangkitan Yesus Kristus yang dimaknai sebagai kemenangan harapan dan kehidupan.';
+  }
+
+  if (name.includes('jumat agung')) {
+    return 'Momen khidmat untuk mengenang pengorbanan Yesus Kristus dalam tradisi Kristiani.';
+  }
+
+  if (name.includes('kamis putih')) {
+    return 'Peringatan kebersamaan dan pelayanan menjelang wafat Yesus Kristus.';
+  }
+
+  if (name.includes('ascension') || name.includes('kenaikan')) {
+    return 'Peringatan keagamaan yang mengajak umat memaknai iman, harapan, dan keteladanan.';
+  }
+
+  if (name.includes('hari pahlawan')) {
+    return 'Momentum mengenang jasa para pahlawan dan menumbuhkan semangat pengabdian bagi bangsa.';
+  }
+
+  if (name.includes('sumpah pemuda')) {
+    return 'Peringatan persatuan pemuda Indonesia yang menegaskan satu tanah air, bangsa, dan bahasa.';
+  }
+
+  if (name.includes('hari kartini')) {
+    return 'Momen mengenang perjuangan R.A. Kartini untuk pendidikan, emansipasi, dan kemajuan perempuan.';
+  }
+
+  if (name.includes('hari pendidikan')) {
+    return 'Pengingat pentingnya pendidikan sebagai fondasi masa depan dan kemajuan bangsa.';
+  }
+
+  if (name.includes('hari anak nasional')) {
+    return 'Momen untuk menegaskan perlindungan, kebahagiaan, dan masa depan terbaik bagi anak-anak.';
+  }
+
+  if (name.includes('pemilu') || name.includes('pilkada')) {
+    return 'Hari penting demokrasi untuk menyalurkan hak pilih dan menentukan arah kepemimpinan bersama.';
+  }
+
+  if (holiday.isCollectiveLeave) {
+    return 'Hari libur tambahan untuk memberi ruang istirahat, kebersamaan, dan kelancaran perayaan.';
+  }
+
+  return 'Hari libur untuk memberi ruang peringatan, refleksi, dan kebersamaan sesuai momennya.';
 };
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 const navigationRef = createNavigationContainerRef<RootStackParamList>();
-
-const getDayKey = (date: Date) => {
-  const dayIndex = date.getDay();
-
-  switch (dayIndex) {
-    case 1:
-      return 'senin';
-    case 2:
-      return 'selasa';
-    case 3:
-      return 'rabu';
-    case 4:
-      return 'kamis';
-    case 5:
-      return 'jumat';
-    case 6:
-      return 'sabtu';
-    default:
-      return 'minggu';
-  }
-};
-
-const formatScheduleTime = (value: string | null | undefined) =>
-  value ? value.replace(':', '.') : '-';
-
-const timeStringToMinutes = (value: string | null | undefined): number => {
-  if (!value || !value.includes(':')) {
-    return 0;
-  }
-
-  const [hours, minutes] = value.split(':').map(Number);
-  return hours * 60 + minutes;
-};
-
-const getAttendanceWindow = (
-  settings: AttendanceSettings,
-  now: Date = new Date(),
-) => {
-  const dayKey = getDayKey(now);
-  const schedule = settings.weeklySchedule[dayKey];
-
-  if (!schedule?.isActive || !schedule.checkIn || !schedule.checkOut) {
-    return {
-      dayKey,
-      schedule,
-      isOffDay: true,
-      withinHours: false,
-      isLate: false,
-    };
-  }
-
-  const currentMinutes = now.getHours() * 60 + now.getMinutes();
-  const startMinutes = timeStringToMinutes(schedule.checkIn);
-  const endMinutes = timeStringToMinutes(schedule.checkOut);
-
-  if (currentMinutes < startMinutes || currentMinutes > endMinutes) {
-    return {
-      dayKey,
-      schedule,
-      isOffDay: false,
-      withinHours: false,
-      isLate: false,
-    };
-  }
-
-  return {
-    dayKey,
-    schedule,
-    isOffDay: false,
-    withinHours: true,
-    isLate: currentMinutes > startMinutes,
-  };
-};
 
 const formatClockTime = (date: Date) =>
   `${String(date.getHours()).padStart(2, '0')}.${String(
@@ -291,10 +382,38 @@ function App() {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [calendarVisible, setCalendarVisible] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState(new Date());
-  const [selectedPhotoUri, setSelectedPhotoUri] = useState<string | null>(null);
+  const [monthHolidays, setMonthHolidays] = useState<NationalHolidayItem[]>([]);
+  const [selectedHolidayDate, setSelectedHolidayDate] = useState<string | null>(null);
+  const [holidayPopup, setHolidayPopup] = useState<NationalHolidayItem | null>(null);
+  const [calendarLoading, setCalendarLoading] = useState(false);
+  const [summaryMonthHolidays, setSummaryMonthHolidays] = useState<NationalHolidayItem[]>([]);
+  const [selectedPhotoSet, setSelectedPhotoSet] = useState<SelectedPhotoSet | null>(null);
   const [settings, setSettings] = useState<AttendanceSettings>(
     DEFAULT_ATTENDANCE_SETTINGS,
   );
+  const currentSummaryYear = currentTime.getFullYear();
+  const currentSummaryMonth = currentTime.getMonth();
+  const currentSummaryMonthDate = useMemo(
+    () => new Date(currentSummaryYear, currentSummaryMonth, 1),
+    [currentSummaryMonth, currentSummaryYear],
+  );
+  const popupOpacity = useRef(new Animated.Value(0)).current;
+  const popupTranslateY = useRef(new Animated.Value(12)).current;
+  const detailOpacity = useRef(new Animated.Value(1)).current;
+  const detailTranslateY = useRef(new Animated.Value(0)).current;
+  const monthHolidayMap = useMemo(
+    () =>
+      monthHolidays.reduce((result, holiday) => {
+        result[holiday.date] = holiday;
+        return result;
+      }, {} as HolidayMap),
+    [monthHolidays],
+  );
+  const selectedHoliday =
+    monthHolidays.find(holiday => holiday.date === selectedHolidayDate) ?? null;
+  const selectedHolidayDescription = selectedHoliday
+    ? getHolidayDescription(selectedHoliday)
+    : '';
 
   useEffect(() => {
     const interval = setInterval(() => {
@@ -303,6 +422,106 @@ function App() {
 
     return () => clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    let active = true;
+
+    setCalendarLoading(true);
+    getNationalHolidaysByMonth(selectedMonth)
+      .then(result => {
+        if (!active) {
+          return;
+        }
+
+        setMonthHolidays(result);
+        setHolidayPopup(null);
+        setSelectedHolidayDate(null);
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+
+        setMonthHolidays([]);
+        setSelectedHolidayDate(null);
+        setHolidayPopup(null);
+      })
+      .finally(() => {
+        if (active) {
+          setCalendarLoading(false);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [selectedMonth]);
+
+  useEffect(() => {
+    let active = true;
+
+    getNationalHolidaysByMonth(currentSummaryMonthDate)
+      .then(result => {
+        if (active) {
+          setSummaryMonthHolidays(result);
+        }
+      })
+      .catch(() => {
+        if (active) {
+          setSummaryMonthHolidays([]);
+        }
+      });
+
+    return () => {
+      active = false;
+    };
+  }, [currentSummaryMonth, currentSummaryMonthDate, currentSummaryYear]);
+
+  useEffect(() => {
+    if (!holidayPopup) {
+      popupOpacity.setValue(0);
+      popupTranslateY.setValue(12);
+      return;
+    }
+
+    popupOpacity.setValue(0);
+    popupTranslateY.setValue(12);
+    Animated.parallel([
+      Animated.timing(popupOpacity, {
+        toValue: 1,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+      Animated.timing(popupTranslateY, {
+        toValue: 0,
+        duration: 220,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [holidayPopup, popupOpacity, popupTranslateY]);
+
+  useEffect(() => {
+    if (!selectedHoliday) {
+      detailOpacity.setValue(1);
+      detailTranslateY.setValue(0);
+      return;
+    }
+
+    detailOpacity.setValue(0.65);
+    detailTranslateY.setValue(8);
+    Animated.parallel([
+      Animated.timing(detailOpacity, {
+        toValue: 1,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+      Animated.timing(detailTranslateY, {
+        toValue: 0,
+        duration: 200,
+        useNativeDriver: true,
+      }),
+    ]).start();
+  }, [detailOpacity, detailTranslateY, selectedHoliday]);
 
   useEffect(() => {
     const bootstrap = async () => {
@@ -478,8 +697,8 @@ function App() {
           return false;
         }
 
-        if (selectedPhotoUri) {
-          setSelectedPhotoUri(null);
+        if (selectedPhotoSet) {
+          setSelectedPhotoSet(null);
           return true;
         }
 
@@ -503,7 +722,7 @@ function App() {
     );
 
     return () => subscription.remove();
-  }, [activeTab, calendarVisible, currentUser, selectedPhotoUri]);
+  }, [activeTab, calendarVisible, currentUser, selectedPhotoSet]);
 
   const groupedHistory = useMemo<DailyHistory[]>(() => {
     if (history.some(item => item.date || item.checkInTime || item.checkOutTime)) {
@@ -512,6 +731,11 @@ function App() {
           const dateKey =
             item.date ||
             String(item.createdAt || item.deviceTimestamp || '').slice(0, 10);
+          const hasCheckIn =
+            typeof item.checkInTime === 'string' && item.checkInTime.trim().length > 0;
+          const hasCheckOut =
+            typeof item.checkOutTime === 'string' && item.checkOutTime.trim().length > 0;
+          const fallbackPhoto = item.photoUri || item.photoUrl || null;
 
           return {
             id: item.id,
@@ -521,7 +745,14 @@ function App() {
             checkInTime: item.checkInTime ?? null,
             checkOutTime: item.checkOutTime ?? null,
             status: item.status,
-            photoUri: item.photoUri || item.photoUrl || null,
+            checkInPhotoUri:
+              item.checkInPhotoUri ||
+              item.checkInPhotoUrl ||
+              (hasCheckIn ? fallbackPhoto : null),
+            checkOutPhotoUri:
+              item.checkOutPhotoUri ||
+              item.checkOutPhotoUrl ||
+              (hasCheckOut && !hasCheckIn ? fallbackPhoto : null),
           };
         })
         .sort((left, right) => right.dateKey.localeCompare(left.dateKey));
@@ -561,7 +792,14 @@ function App() {
           checkInTime: eventType === 'checkin' ? eventTime : null,
           checkOutTime: eventType === 'checkout' ? eventTime : null,
           status: item.status,
-          photoUri: item.photoUrl || null,
+          checkInPhotoUri:
+            eventType === 'checkin'
+              ? item.checkInPhotoUri || item.checkInPhotoUrl || item.photoUrl || null
+              : null,
+          checkOutPhotoUri:
+            eventType === 'checkout'
+              ? item.checkOutPhotoUri || item.checkOutPhotoUrl || item.photoUrl || null
+              : null,
         });
         return;
       }
@@ -574,8 +812,22 @@ function App() {
         existing.checkOutTime = eventTime;
       }
 
-      if (!existing.photoUri && item.photoUrl) {
-        existing.photoUri = item.photoUrl;
+      if (
+        eventType === 'checkin' &&
+        !existing.checkInPhotoUri &&
+        (item.checkInPhotoUri || item.checkInPhotoUrl || item.photoUrl)
+      ) {
+        existing.checkInPhotoUri =
+          item.checkInPhotoUri || item.checkInPhotoUrl || item.photoUrl || null;
+      }
+
+      if (
+        eventType === 'checkout' &&
+        !existing.checkOutPhotoUri &&
+        (item.checkOutPhotoUri || item.checkOutPhotoUrl || item.photoUrl)
+      ) {
+        existing.checkOutPhotoUri =
+          item.checkOutPhotoUri || item.checkOutPhotoUrl || item.photoUrl || null;
       }
 
       if (existing.status === 'hadir' && item.status !== 'hadir') {
@@ -588,16 +840,56 @@ function App() {
     );
   }, [currentUser?.schoolName, history]);
 
-  const summary = useMemo(
-    () => ({
-      hadir: groupedHistory.filter(item => item.status === 'hadir').length,
-      terlambat: groupedHistory.filter(item => item.status === 'terlambat').length,
-      tidakHadir: groupedHistory.filter(item => item.status === 'tidak_hadir').length,
-    }),
-    [groupedHistory],
+  const currentMonthKey = `${currentTime.getFullYear()}-${`${currentTime.getMonth() + 1}`.padStart(2, '0')}`;
+  const monthlyHistory = useMemo(
+    () => groupedHistory.filter(item => item.dateKey.startsWith(currentMonthKey)),
+    [currentMonthKey, groupedHistory],
   );
 
+  const summary = useMemo(() => {
+    const recordedDays = new Set(monthlyHistory.map(item => item.dateKey));
+    const holidayKeys = new Set(summaryMonthHolidays.map(item => item.date));
+    const currentYear = currentTime.getFullYear();
+    const currentMonth = currentTime.getMonth();
+    const today = currentTime.getDate();
+    const currentMinutes = currentTime.getHours() * 60 + currentTime.getMinutes();
+    let tidakHadir = 0;
+
+    for (let day = 1; day <= today; day += 1) {
+      const date = new Date(currentYear, currentMonth, day, 12, 0, 0);
+      const dateKey = buildDateKey(date);
+      const dayKey = getDayKey(date);
+      const schedule = settings.weeklySchedule[dayKey];
+
+      if (!schedule?.isActive || !isScheduleConfigured(schedule) || holidayKeys.has(dateKey)) {
+        continue;
+      }
+
+      if (day === today) {
+        const lateEndMinutes = timeStringToMinutes(schedule.lateEnd);
+
+        if (currentMinutes <= lateEndMinutes) {
+          continue;
+        }
+      }
+
+      if (!recordedDays.has(dateKey)) {
+        tidakHadir += 1;
+      }
+    }
+
+    return {
+      hadir: monthlyHistory.filter(item => item.status === 'hadir').length,
+      terlambat: monthlyHistory.filter(item => item.status === 'terlambat').length,
+      tidakHadir,
+    };
+  }, [currentTime, monthlyHistory, settings.weeklySchedule, summaryMonthHolidays]);
+  const summaryPeriodLabel = `Periode ${MONTH_LABELS[currentSummaryMonth]} ${currentSummaryYear}`;
+
   const attendanceWindow = getAttendanceWindow(settings, currentTime);
+  const scheduleLines = attendanceWindow.holiday.isNationalHoliday
+    ? ['Hari Libur Nasional']
+    : getAttendanceScheduleLines(attendanceWindow.schedule);
   const selectedMonthYear = selectedMonth.getFullYear();
   const selectedMonthIndex = selectedMonth.getMonth();
   const firstDay = new Date(selectedMonthYear, selectedMonthIndex, 1).getDay();
@@ -606,17 +898,15 @@ function App() {
     selectedMonthIndex + 1,
     0,
   ).getDate();
-  const calendarDays = Array.from(
-    {length: firstDay + daysInMonth},
-    (_, index) => {
-      if (index < firstDay) {
-        return null;
-      }
+  const totalCalendarSlots = Math.ceil((firstDay + daysInMonth) / 7) * 7;
+  const calendarDays = Array.from({length: totalCalendarSlots}, (_, index) => {
+    if (index < firstDay) {
+      return null;
+    }
 
-      return index - firstDay + 1;
-    },
-  );
-
+    const dayNumber = index - firstDay + 1;
+    return dayNumber <= daysInMonth ? dayNumber : null;
+  });
   const handleLogin = async () => {
     const trimmedNisn = nisn.trim();
     const trimmedPassword = password.trim();
@@ -778,14 +1068,14 @@ function App() {
 
         <View style={styles.scheduleCard}>
           <Text style={styles.scheduleTitle}>{settings.name}</Text>
-          <Text style={styles.scheduleSubtitle}>
-            {DAY_LABELS[attendanceWindow.dayKey]} •{' '}
-            {attendanceWindow.isOffDay
-              ? 'Libur'
-              : `${formatScheduleTime(attendanceWindow.schedule?.checkIn)} - ${formatScheduleTime(
-                  attendanceWindow.schedule?.checkOut,
-                )}`}
-          </Text>
+          <Text style={styles.scheduleDayLabel}>{DAY_LABELS[attendanceWindow.dayKey]}</Text>
+          <View style={styles.scheduleSummaryBlock}>
+            {scheduleLines.map(line => (
+              <Text key={line} style={styles.scheduleSubtitle}>
+                {line}
+              </Text>
+            ))}
+          </View>
           <Text style={styles.scheduleMeta}>{settings.location.name}</Text>
           <Text style={styles.scheduleMeta}>
             Radius {settings.radiusMeters} meter
@@ -826,6 +1116,7 @@ function App() {
 
         <Pressable style={styles.summaryCard} onPress={() => setActiveTab('history')}>
           <Text style={styles.summaryTitle}>Ringkasan Kehadiran</Text>
+          <Text style={styles.summarySubtitle}>{summaryPeriodLabel}</Text>
           <View style={styles.summaryRow}>
             <View style={styles.summaryItem}>
               <CircleCheck size={28} color={Colors.green} />
@@ -871,7 +1162,14 @@ function App() {
                 <Pressable
                   key={item.id}
                   style={styles.recordCard}
-                  onPress={() => item.photoUri && setSelectedPhotoUri(item.photoUri)}>
+                  onPress={() =>
+                    (item.checkInPhotoUri || item.checkOutPhotoUri) &&
+                    setSelectedPhotoSet({
+                      dateLabel: item.dateLabel,
+                      checkInPhotoUri: item.checkInPhotoUri,
+                      checkOutPhotoUri: item.checkOutPhotoUri,
+                    })
+                  }>
                   <View style={styles.recordHeader}>
                     <View style={styles.recordHeaderLeft}>
                       {item.status === 'hadir' ? (
@@ -907,12 +1205,12 @@ function App() {
                   </View>
                   <Text
                     style={
-                      item.photoUri
+                      item.checkInPhotoUri || item.checkOutPhotoUri
                         ? styles.photoHint
                         : styles.photoHintDisabled
                     }>
-                    {item.photoUri
-                      ? 'Ketuk untuk melihat foto absen'
+                    {item.checkInPhotoUri || item.checkOutPhotoUri
+                      ? 'Ketuk untuk melihat foto absen datang dan pulang'
                       : 'Foto belum tersedia'}
                   </Text>
                 </Pressable>
@@ -1107,112 +1405,249 @@ function App() {
           visible={calendarVisible}
           transparent
           animationType="fade"
-          onRequestClose={() => setCalendarVisible(false)}>
+          onRequestClose={() => {
+            setCalendarVisible(false);
+            setHolidayPopup(null);
+          }}>
           <View style={styles.calendarOverlay}>
             <Pressable
               style={styles.calendarBackdrop}
-              onPress={() => setCalendarVisible(false)}
+              onPress={() => {
+                setCalendarVisible(false);
+                setHolidayPopup(null);
+              }}
             />
             <View style={styles.calendarModal}>
               <View style={styles.calendarModalHeader}>
                 <Text style={styles.calendarModalTitle}>Kalender</Text>
-                <Pressable onPress={() => setCalendarVisible(false)}>
+                <Pressable
+                  onPress={() => {
+                    setCalendarVisible(false);
+                    setHolidayPopup(null);
+                  }}>
                   <Text style={styles.calendarCloseText}>Tutup</Text>
                 </Pressable>
               </View>
 
-              <View style={styles.calendarMonthRow}>
-                <Pressable
-                  style={styles.calendarNavButton}
-                  onPress={() =>
-                    setSelectedMonth(
-                      previous =>
-                        new Date(
-                          previous.getFullYear(),
-                          previous.getMonth() - 1,
-                          1,
-                        ),
-                    )
-                  }>
-                  <ChevronLeft size={18} color={Colors.primary} />
-                </Pressable>
-                <Text style={styles.calendarMonthText}>
-                  {MONTH_LABELS[selectedMonthIndex]} {selectedMonthYear}
-                </Text>
-                <Pressable
-                  style={styles.calendarNavButton}
-                  onPress={() =>
-                    setSelectedMonth(
-                      previous =>
-                        new Date(
-                          previous.getFullYear(),
-                          previous.getMonth() + 1,
-                          1,
-                        ),
-                    )
-                  }>
-                  <ChevronRight size={18} color={Colors.primary} />
-                </Pressable>
-              </View>
-
-              <View style={styles.calendarGrid}>
-                {['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'].map(dayName => (
-                  <Text key={dayName} style={styles.calendarDayName}>
-                    {dayName}
+              <ScrollView
+                style={styles.calendarScrollArea}
+                contentContainerStyle={styles.calendarScrollContent}
+                showsVerticalScrollIndicator={false}>
+                <View style={styles.calendarMonthRow}>
+                  <Pressable
+                    style={styles.calendarNavButton}
+                    onPress={() =>
+                      setSelectedMonth(
+                        previous =>
+                          new Date(
+                            previous.getFullYear(),
+                            previous.getMonth() - 1,
+                            1,
+                          ),
+                      )
+                    }>
+                    <ChevronLeft size={18} color={Colors.primary} />
+                  </Pressable>
+                  <Text style={styles.calendarMonthText}>
+                    {MONTH_LABELS[selectedMonthIndex]} {selectedMonthYear}
                   </Text>
-                ))}
-                {calendarDays.map((day, index) => {
-                  const isToday =
-                    day === currentTime.getDate() &&
-                    selectedMonthIndex === currentTime.getMonth() &&
-                    selectedMonthYear === currentTime.getFullYear();
+                  <Pressable
+                    style={styles.calendarNavButton}
+                    onPress={() =>
+                      setSelectedMonth(
+                        previous =>
+                          new Date(
+                            previous.getFullYear(),
+                            previous.getMonth() + 1,
+                            1,
+                          ),
+                      )
+                    }>
+                    <ChevronRight size={18} color={Colors.primary} />
+                  </Pressable>
+                </View>
 
-                  return (
-                    <View
-                      key={day === null ? `empty-${index}` : `day-${day}`}
-                      style={[
-                        styles.calendarDayCell,
-                        isToday && styles.calendarDayToday,
-                      ]}>
-                      {day ? (
-                        <Text
-                          style={[
-                            styles.calendarDayText,
-                            isToday && styles.calendarDayTodayText,
-                          ]}>
-                          {day}
+                {holidayPopup ? (
+                  <Animated.View
+                    style={[
+                      styles.calendarPopupCard,
+                      {
+                        opacity: popupOpacity,
+                        transform: [{translateY: popupTranslateY}],
+                      },
+                    ]}>
+                    <Text style={styles.calendarPopupDate}>
+                      {formatDayMonthYear(holidayPopup.date)}
+                    </Text>
+                    <Text style={styles.calendarPopupTitle}>{holidayPopup.name}</Text>
+                  </Animated.View>
+                ) : null}
+
+                <View style={styles.calendarGrid}>
+                  {['Min', 'Sen', 'Sel', 'Rab', 'Kam', 'Jum', 'Sab'].map((dayName, dayIndex) => (
+                    <Text
+                      key={dayName}
+                      style={[styles.calendarDayName, dayIndex === 0 && styles.calendarSundayName]}>
+                      {dayName}
+                    </Text>
+                  ))}
+                  {calendarDays.map((day, index) => {
+                    const isToday =
+                      day === currentTime.getDate() &&
+                      selectedMonthIndex === currentTime.getMonth() &&
+                      selectedMonthYear === currentTime.getFullYear();
+                    const dateKey =
+                      day === null
+                        ? null
+                        : `${selectedMonthYear}-${`${selectedMonthIndex + 1}`.padStart(
+                            2,
+                            '0',
+                          )}-${`${day}`.padStart(2, '0')}`;
+                    const holiday = dateKey ? monthHolidayMap[dateKey] : null;
+                    const isSelectedHoliday = holiday?.date === selectedHolidayDate;
+                    const weekdayColumn = index % 7;
+                    const isWeekendColumn = weekdayColumn === 0 || weekdayColumn === 6;
+                    const dayTone: CalendarDayTone = holiday
+                      ? holiday.isNationalHoliday
+                        ? 'national'
+                        : 'collective'
+                      : isWeekendColumn
+                        ? 'weekend'
+                        : 'default';
+
+                    return (
+                      <Pressable
+                        key={day === null ? `empty-${index}` : `day-${day}`}
+                        disabled={!holiday}
+                        onPress={() => {
+                          if (holiday) {
+                            setSelectedHolidayDate(holiday.date);
+                            setHolidayPopup(holiday);
+                          }
+                        }}
+                        style={[
+                          styles.calendarDayCell,
+                          dayTone === 'weekend' && styles.calendarWeekendCell,
+                          dayTone === 'national' && styles.calendarNationalHolidayCell,
+                          dayTone === 'collective' && styles.calendarCollectiveLeaveCell,
+                          isSelectedHoliday && styles.calendarHolidaySelected,
+                          isToday && styles.calendarDayToday,
+                        ]}>
+                        {day ? (
+                          <Text
+                            style={[
+                              styles.calendarDayText,
+                              dayTone === 'weekend' && styles.calendarWeekendText,
+                              dayTone === 'national' && styles.calendarNationalHolidayText,
+                              dayTone === 'collective' && styles.calendarCollectiveLeaveText,
+                              isSelectedHoliday && styles.calendarHolidaySelectedText,
+                              isToday && styles.calendarDayTodayText,
+                            ]}>
+                            {day}
+                          </Text>
+                        ) : null}
+                      </Pressable>
+                    );
+                  })}
+                </View>
+
+                <View style={styles.calendarHolidayPanel}>
+                  <View style={styles.calendarHolidayPanelHeader}>
+                    <Text style={styles.calendarHolidayPanelTitle}>Hari Libur & Cuti Bersama</Text>
+                    {!calendarLoading && monthHolidays.length > 0 ? (
+                      <View style={styles.calendarHolidayCountBadge}>
+                        <Text style={styles.calendarHolidayCountText}>
+                          {monthHolidays.length} hari
                         </Text>
-                      ) : null}
+                      </View>
+                    ) : null}
+                  </View>
+                  {calendarLoading ? (
+                    <Text style={styles.calendarHolidayEmpty}>Memuat data hari libur...</Text>
+                  ) : selectedHoliday ? (
+                    <Animated.View
+                      style={[
+                        styles.calendarHolidayDetailCard,
+                        selectedHoliday.isNationalHoliday
+                          ? styles.calendarHolidayDetailNational
+                          : styles.calendarHolidayDetailCollective,
+                        {
+                          opacity: detailOpacity,
+                          transform: [{translateY: detailTranslateY}],
+                        },
+                      ]}>
+                      <Text style={styles.calendarHolidayDate}>
+                        {formatDayMonthYear(selectedHoliday.date)}
+                      </Text>
+                      <Text style={styles.calendarHolidayName}>{selectedHoliday.name}</Text>
+                      <Text style={styles.calendarHolidayTypeLabel}>
+                        {getHolidayTypeLabel(selectedHoliday)}
+                      </Text>
+                      <Text style={styles.calendarHolidayHint}>
+                        {selectedHolidayDescription}
+                      </Text>
+                    </Animated.View>
+                  ) : (
+                    <View style={styles.calendarHolidayEmptyCard}>
+                      <Text style={styles.calendarHolidayEmptyTitle}>
+                        Belum ada detail dipilih
+                      </Text>
+                      <Text style={styles.calendarHolidayEmpty}>
+                        Ketuk tanggal libur pada kalender untuk melihat nama hari libur dan
+                        penjelasan singkatnya.
+                      </Text>
                     </View>
-                  );
-                })}
-              </View>
+                  )}
+                </View>
+              </ScrollView>
             </View>
           </View>
         </Modal>
 
         <Modal
-          visible={Boolean(selectedPhotoUri)}
+          visible={Boolean(selectedPhotoSet)}
           transparent
           animationType="fade"
-          onRequestClose={() => setSelectedPhotoUri(null)}>
+          onRequestClose={() => setSelectedPhotoSet(null)}>
           <View style={styles.photoOverlay}>
             <Pressable
               style={styles.photoBackdrop}
-              onPress={() => setSelectedPhotoUri(null)}
+              onPress={() => setSelectedPhotoSet(null)}
             />
             <View style={styles.photoModal}>
               <Text style={styles.photoTitle}>Foto Kehadiran</Text>
-              {selectedPhotoUri ? (
-                <Image
-                  source={{uri: selectedPhotoUri}}
-                  style={styles.photoPreview}
-                  resizeMode="contain"
-                />
-              ) : null}
+              <Text style={styles.photoSubtitle}>
+                {selectedPhotoSet?.dateLabel ?? 'Detail foto absensi'}
+              </Text>
+              <ScrollView
+                style={styles.photoScrollArea}
+                contentContainerStyle={styles.photoScrollContent}
+                showsVerticalScrollIndicator={false}>
+                {selectedPhotoSet?.checkInPhotoUri ? (
+                  <View style={styles.photoSection}>
+                    <Text style={styles.photoSectionTitle}>Absen Datang</Text>
+                    <Image
+                      source={{uri: selectedPhotoSet.checkInPhotoUri}}
+                      style={styles.photoPreview}
+                      resizeMode="contain"
+                    />
+                  </View>
+                ) : null}
+
+                {selectedPhotoSet?.checkOutPhotoUri ? (
+                  <View style={styles.photoSection}>
+                    <Text style={styles.photoSectionTitle}>Absen Pulang</Text>
+                    <Image
+                      source={{uri: selectedPhotoSet.checkOutPhotoUri}}
+                      style={styles.photoPreview}
+                      resizeMode="contain"
+                    />
+                  </View>
+                ) : null}
+              </ScrollView>
               <Pressable
                 style={styles.closeButton}
-                onPress={() => setSelectedPhotoUri(null)}>
+                onPress={() => setSelectedPhotoSet(null)}>
                 <Text style={styles.closeButtonText}>Tutup</Text>
               </Pressable>
             </View>
@@ -1458,10 +1893,20 @@ const styles = StyleSheet.create({
     fontWeight: '800',
     color: Colors.text,
   },
+  scheduleDayLabel: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.primary,
+    marginTop: 6,
+  },
+  scheduleSummaryBlock: {
+    marginTop: 6,
+    gap: 2,
+  },
   scheduleSubtitle: {
     fontSize: 13,
     color: Colors.textSecondary,
-    marginTop: 4,
+    lineHeight: 18,
   },
   scheduleMeta: {
     fontSize: 13,
@@ -1525,6 +1970,11 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: Colors.text,
+    marginBottom: 4,
+  },
+  summarySubtitle: {
+    fontSize: 12,
+    color: Colors.textSecondary,
     marginBottom: 16,
   },
   summaryRow: {
@@ -1832,7 +2282,8 @@ const styles = StyleSheet.create({
   calendarModal: {
     backgroundColor: Colors.white,
     borderRadius: 18,
-    padding: 18,
+    padding: 16,
+    maxHeight: '86%',
     elevation: 10,
     shadowColor: Colors.shadow,
     shadowOffset: {width: 0, height: 4},
@@ -1855,11 +2306,17 @@ const styles = StyleSheet.create({
     fontWeight: '600',
     color: Colors.primary,
   },
+  calendarScrollArea: {
+    flexGrow: 0,
+  },
+  calendarScrollContent: {
+    paddingBottom: 4,
+  },
   calendarMonthRow: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 16,
+    marginBottom: 12,
   },
   calendarNavButton: {
     width: 34,
@@ -1879,37 +2336,177 @@ const styles = StyleSheet.create({
     fontWeight: '700',
     color: Colors.text,
   },
+  calendarPopupCard: {
+    backgroundColor: '#FFF1F2',
+    borderWidth: 1,
+    borderColor: '#FECDD3',
+    borderRadius: 12,
+    paddingHorizontal: 10,
+    paddingVertical: 8,
+    marginBottom: 12,
+  },
+  calendarPopupDate: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: '#BE123C',
+    marginBottom: 2,
+  },
+  calendarPopupTitle: {
+    fontSize: 12,
+    fontWeight: '700',
+    color: '#9F1239',
+    lineHeight: 16,
+  },
   calendarGrid: {
     flexDirection: 'row',
     flexWrap: 'wrap',
-    gap: 8,
   },
   calendarDayName: {
-    width: '12.85%',
+    width: '14.2857%',
     textAlign: 'center',
-    fontSize: 12,
+    fontSize: 11,
     fontWeight: '600',
     color: Colors.textSecondary,
-    marginBottom: 4,
+    marginBottom: 8,
+  },
+  calendarSundayName: {
+    color: '#EA580C',
   },
   calendarDayCell: {
-    width: '12.85%',
+    width: '14.2857%',
     aspectRatio: 1,
-    borderRadius: 12,
+    borderRadius: 11,
     alignItems: 'center',
     justifyContent: 'center',
     backgroundColor: '#F8FAFC',
+    position: 'relative',
+    marginBottom: 7,
+  },
+  calendarWeekendCell: {
+    backgroundColor: '#FFF7ED',
+  },
+  calendarNationalHolidayCell: {
+    borderWidth: 1,
+    borderColor: '#FECACA',
+    backgroundColor: '#FFF5F5',
+  },
+  calendarCollectiveLeaveCell: {
+    borderWidth: 1,
+    borderColor: '#FDE68A',
+    backgroundColor: '#FEFCE8',
+  },
+  calendarHolidaySelected: {
+    backgroundColor: Colors.red,
+    borderColor: Colors.red,
   },
   calendarDayToday: {
     backgroundColor: Colors.primary,
   },
   calendarDayText: {
-    fontSize: 14,
+    fontSize: 13,
     fontWeight: '600',
     color: Colors.text,
   },
+  calendarWeekendText: {
+    color: '#C2410C',
+  },
+  calendarNationalHolidayText: {
+    color: '#B91C1C',
+  },
+  calendarCollectiveLeaveText: {
+    color: '#A16207',
+  },
+  calendarHolidaySelectedText: {
+    color: Colors.white,
+  },
   calendarDayTodayText: {
     color: Colors.white,
+  },
+  calendarHolidayPanel: {
+    marginTop: 14,
+    paddingTop: 14,
+    borderTopWidth: 1,
+    borderTopColor: Colors.border,
+  },
+  calendarHolidayPanelHeader: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    marginBottom: 10,
+  },
+  calendarHolidayPanelTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.text,
+  },
+  calendarHolidayCountBadge: {
+    backgroundColor: '#F3F4F6',
+    borderRadius: 999,
+    paddingHorizontal: 10,
+    paddingVertical: 4,
+  },
+  calendarHolidayCountText: {
+    fontSize: 11,
+    fontWeight: '600',
+    color: Colors.textSecondary,
+  },
+  calendarHolidayDetailCard: {
+    backgroundColor: '#FFF7ED',
+    borderWidth: 1,
+    borderColor: '#FED7AA',
+    borderRadius: 12,
+    paddingHorizontal: 12,
+    paddingVertical: 11,
+  },
+  calendarHolidayDetailNational: {
+    backgroundColor: '#FFF1F2',
+    borderColor: '#FECDD3',
+  },
+  calendarHolidayDetailCollective: {
+    backgroundColor: '#FEFCE8',
+    borderColor: '#FDE68A',
+  },
+  calendarHolidayDate: {
+    fontSize: 12,
+    fontWeight: '600',
+    color: Colors.orange,
+    marginBottom: 4,
+  },
+  calendarHolidayName: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.text,
+  },
+  calendarHolidayTypeLabel: {
+    fontSize: 11,
+    fontWeight: '700',
+    color: Colors.textSecondary,
+    marginTop: 5,
+  },
+  calendarHolidayHint: {
+    fontSize: 11,
+    color: Colors.textSecondary,
+    marginTop: 6,
+    lineHeight: 16,
+  },
+  calendarHolidayEmpty: {
+    fontSize: 13,
+    color: Colors.textSecondary,
+    lineHeight: 19,
+  },
+  calendarHolidayEmptyCard: {
+    borderWidth: 1,
+    borderColor: Colors.border,
+    borderRadius: 12,
+    backgroundColor: '#F8FAFC',
+    paddingHorizontal: 12,
+    paddingVertical: 14,
+  },
+  calendarHolidayEmptyTitle: {
+    fontSize: 13,
+    fontWeight: '700',
+    color: Colors.text,
+    marginBottom: 6,
   },
   photoOverlay: {
     flex: 1,
@@ -1933,7 +2530,28 @@ const styles = StyleSheet.create({
     fontSize: 16,
     fontWeight: '700',
     color: Colors.text,
+    marginBottom: 4,
+  },
+  photoSubtitle: {
+    fontSize: 12,
+    color: Colors.textSecondary,
     marginBottom: 12,
+  },
+  photoScrollArea: {
+    width: '100%',
+    maxHeight: 460,
+  },
+  photoScrollContent: {
+    gap: 14,
+  },
+  photoSection: {
+    width: '100%',
+  },
+  photoSectionTitle: {
+    fontSize: 14,
+    fontWeight: '700',
+    color: Colors.text,
+    marginBottom: 8,
   },
   photoPreview: {
     width: '100%',

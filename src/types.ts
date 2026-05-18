@@ -29,6 +29,10 @@ export type AttendanceRecord = {
   deviceTimestamp: string;
   photoUrl: string;
   photoPath: string;
+  checkInPhotoUrl?: string | null;
+  checkOutPhotoUrl?: string | null;
+  checkInPhotoUri?: string | null;
+  checkOutPhotoUri?: string | null;
   status: 'hadir' | 'terlambat' | 'tidak_hadir' | 'tidak_valid';
   note: string;
   eventType?: 'checkin' | 'checkout';

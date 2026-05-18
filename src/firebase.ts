@@ -4,6 +4,12 @@ import ImageResizer from '@bam.tech/react-native-image-resizer';
 import RNFS from 'react-native-fs';
 
 import { AttendanceRecord, CapturedPhoto, UserProfile } from './types';
+import {
+  buildDateKey,
+  formatDateShort,
+  formatTimeShort,
+  normalizeDaySchedule,
+} from './attendanceUtils';
 
 const USERS_COLLECTION = 'users';
 const LOGIN_INDEX_COLLECTION = 'login_index';
@@ -42,8 +48,12 @@ export type DayKey = (typeof DAY_ORDER)[number];
 
 export type DailySchedule = {
   isActive: boolean;
-  checkIn: string | null;
-  checkOut: string | null;
+  checkInStart: string | null;
+  checkInEnd: string | null;
+  lateStart: string | null;
+  lateEnd: string | null;
+  checkOutStart: string | null;
+  checkOutEnd: string | null;
 };
 
 export type AttendanceSettings = {
@@ -66,13 +76,69 @@ export const DEFAULT_ATTENDANCE_SETTINGS: AttendanceSettings = {
     name: 'Perumda Air Minum Tirta Tugu Malang',
   },
   weeklySchedule: {
-    senin: { isActive: true, checkIn: '08:00', checkOut: '16:00' },
-    selasa: { isActive: true, checkIn: '08:00', checkOut: '16:00' },
-    rabu: { isActive: true, checkIn: '08:00', checkOut: '16:00' },
-    kamis: { isActive: true, checkIn: '08:00', checkOut: '16:00' },
-    jumat: { isActive: true, checkIn: '08:00', checkOut: '15:00' },
-    sabtu: { isActive: false, checkIn: null, checkOut: null },
-    minggu: { isActive: false, checkIn: null, checkOut: null },
+    senin: {
+      isActive: true,
+      checkInStart: '06:00',
+      checkInEnd: '07:00',
+      lateStart: '07:01',
+      lateEnd: '08:00',
+      checkOutStart: '15:00',
+      checkOutEnd: '19:30',
+    },
+    selasa: {
+      isActive: true,
+      checkInStart: '06:00',
+      checkInEnd: '07:00',
+      lateStart: '07:01',
+      lateEnd: '08:00',
+      checkOutStart: '15:00',
+      checkOutEnd: '19:30',
+    },
+    rabu: {
+      isActive: true,
+      checkInStart: '06:00',
+      checkInEnd: '07:00',
+      lateStart: '07:01',
+      lateEnd: '08:00',
+      checkOutStart: '15:00',
+      checkOutEnd: '19:30',
+    },
+    kamis: {
+      isActive: true,
+      checkInStart: '06:00',
+      checkInEnd: '07:00',
+      lateStart: '07:01',
+      lateEnd: '08:00',
+      checkOutStart: '15:00',
+      checkOutEnd: '19:30',
+    },
+    jumat: {
+      isActive: true,
+      checkInStart: '06:00',
+      checkInEnd: '07:00',
+      lateStart: '07:01',
+      lateEnd: '08:00',
+      checkOutStart: '15:00',
+      checkOutEnd: '19:30',
+    },
+    sabtu: {
+      isActive: false,
+      checkInStart: null,
+      checkInEnd: null,
+      lateStart: null,
+      lateEnd: null,
+      checkOutStart: null,
+      checkOutEnd: null,
+    },
+    minggu: {
+      isActive: false,
+      checkInStart: null,
+      checkInEnd: null,
+      lateStart: null,
+      lateEnd: null,
+      checkOutStart: null,
+      checkOutEnd: null,
+    },
   },
 };
 
@@ -83,25 +149,7 @@ export const normalizeAttendanceSettings = (
   const weeklySchedule = DAY_ORDER.reduce((result, dayKey) => {
     const defaultDay = DEFAULT_ATTENDANCE_SETTINGS.weeklySchedule[dayKey];
     const rawDay = rawSettings?.weeklySchedule?.[dayKey];
-
-    result[dayKey] = {
-      isActive:
-        typeof rawDay?.isActive === 'boolean' ? rawDay.isActive : defaultDay.isActive,
-      checkIn:
-        typeof rawDay?.checkIn === 'string' || rawDay?.checkIn === null
-          ? rawDay.checkIn
-          : defaultDay.checkIn,
-      checkOut:
-        typeof rawDay?.checkOut === 'string' || rawDay?.checkOut === null
-          ? rawDay.checkOut
-          : defaultDay.checkOut,
-    };
-
-    if (!result[dayKey].isActive) {
-      result[dayKey].checkIn = null;
-      result[dayKey].checkOut = null;
-    }
-
+    result[dayKey] = normalizeDaySchedule(rawDay, defaultDay);
     return result;
   }, {} as AttendanceSettings['weeklySchedule']);
 
@@ -237,29 +285,6 @@ const mapUserSnapshot = (
       : snapshot.id;
 
   return mapStudent(snapshot.id, nisn, data);
-};
-
-const formatTimeShort = (date: Date) =>
-  new Intl.DateTimeFormat('id-ID', {
-    hour: '2-digit',
-    minute: '2-digit',
-  })
-    .format(date)
-    .replaceAll(':', '.');
-
-const formatDateShort = (date: Date) =>
-  new Intl.DateTimeFormat('id-ID', {
-    day: 'numeric',
-    month: 'long',
-    year: 'numeric',
-  }).format(date);
-
-const buildDateKey = (date: Date) => {
-  const year = date.getFullYear();
-  const month = `${date.getMonth() + 1}`.padStart(2, '0');
-  const day = `${date.getDate()}`.padStart(2, '0');
-
-  return `${year}-${month}-${day}`;
 };
 
 const getDateMetadata = (dateKey: string) => {
@@ -416,6 +441,36 @@ export const subscribeAttendanceHistory = (
                 : typeof data.photoUrl === 'string'
                   ? data.photoUrl
                   : '';
+            const checkInPhotoUri =
+              typeof data.checkInPhotoUri === 'string'
+                ? data.checkInPhotoUri
+                : typeof data.checkInPhotoUrl === 'string'
+                  ? data.checkInPhotoUrl
+                  : typeof data.photoUri === 'string' &&
+                      typeof data.checkInTime === 'string' &&
+                      data.checkInTime.trim().length > 0
+                    ? data.photoUri
+                    : typeof data.photoUrl === 'string' &&
+                        typeof data.checkInTime === 'string' &&
+                        data.checkInTime.trim().length > 0
+                      ? data.photoUrl
+                      : null;
+            const checkOutPhotoUri =
+              typeof data.checkOutPhotoUri === 'string'
+                ? data.checkOutPhotoUri
+                : typeof data.checkOutPhotoUrl === 'string'
+                  ? data.checkOutPhotoUrl
+                  : typeof data.photoUri === 'string' &&
+                      typeof data.checkOutTime === 'string' &&
+                      data.checkOutTime.trim().length > 0 &&
+                      typeof data.checkInTime !== 'string'
+                    ? data.photoUri
+                    : typeof data.photoUrl === 'string' &&
+                        typeof data.checkOutTime === 'string' &&
+                        data.checkOutTime.trim().length > 0 &&
+                        typeof data.checkInTime !== 'string'
+                      ? data.photoUrl
+                      : null;
             const hasCheckOut =
               typeof data.checkOutTime === 'string' && data.checkOutTime.trim().length > 0;
             const hasCheckIn =
@@ -460,6 +515,10 @@ export const subscribeAttendanceHistory = (
               checkOutTime:
                 typeof data.checkOutTime === 'string' ? data.checkOutTime : null,
               photoUri: photoUri || null,
+              checkInPhotoUrl: checkInPhotoUri,
+              checkOutPhotoUrl: checkOutPhotoUri,
+              checkInPhotoUri,
+              checkOutPhotoUri,
               userNisn:
                 typeof data.userNisn === 'string' ? data.userNisn : null,
               userName:
@@ -633,10 +692,15 @@ export const submitAttendance = async (
   const photoUrl = await buildPhotoDataUrl(photo);
 
   const existingSnapshot = await attendanceRef.get();
-  const existingData = existingSnapshot.data() as
+      const existingData = existingSnapshot.data() as
     | {
         checkInTime?: unknown;
         checkOutTime?: unknown;
+        status?: unknown;
+        checkInPhotoUrl?: unknown;
+        checkInPhotoUri?: unknown;
+        checkOutPhotoUrl?: unknown;
+        checkOutPhotoUri?: unknown;
         photoUri?: unknown;
         createdAt?: unknown;
       }
@@ -657,7 +721,10 @@ export const submitAttendance = async (
       userName: profile.name,
       kelas: profile.className ?? null,
       jurusan: profile.major ?? null,
-      status,
+      status:
+        eventType === 'checkout' && typeof existingData?.status === 'string'
+          ? existingData.status
+          : status,
       note,
       eventType,
       checkInTime:
@@ -672,8 +739,50 @@ export const submitAttendance = async (
           : typeof existingData?.checkOutTime === 'string'
             ? existingData.checkOutTime
             : null,
-      photoUri: photoUrl,
-      photoUrl,
+      photoUri:
+        eventType === 'checkin'
+          ? typeof existingData?.photoUri === 'string'
+            ? existingData.photoUri
+            : photoUrl
+          : photoUrl,
+      photoUrl:
+        eventType === 'checkin'
+          ? typeof existingData?.photoUrl === 'string'
+            ? existingData.photoUrl
+            : photoUrl
+          : photoUrl,
+      checkInPhotoUri:
+        eventType === 'checkin'
+          ? photoUrl
+          : typeof existingData?.checkInPhotoUri === 'string'
+            ? existingData.checkInPhotoUri
+            : typeof existingData?.checkInPhotoUrl === 'string'
+              ? existingData.checkInPhotoUrl
+              : null,
+      checkInPhotoUrl:
+        eventType === 'checkin'
+          ? photoUrl
+          : typeof existingData?.checkInPhotoUrl === 'string'
+            ? existingData.checkInPhotoUrl
+            : typeof existingData?.checkInPhotoUri === 'string'
+              ? existingData.checkInPhotoUri
+              : null,
+      checkOutPhotoUri:
+        eventType === 'checkout'
+          ? photoUrl
+          : typeof existingData?.checkOutPhotoUri === 'string'
+            ? existingData.checkOutPhotoUri
+            : typeof existingData?.checkOutPhotoUrl === 'string'
+              ? existingData.checkOutPhotoUrl
+              : null,
+      checkOutPhotoUrl:
+        eventType === 'checkout'
+          ? photoUrl
+          : typeof existingData?.checkOutPhotoUrl === 'string'
+            ? existingData.checkOutPhotoUrl
+            : typeof existingData?.checkOutPhotoUri === 'string'
+              ? existingData.checkOutPhotoUri
+              : null,
       photoPath: null,
       photoFileName: photo.fileName ?? `${attendanceRef.id}.${extension}`,
       photoMimeType: photo.type ?? 'image/jpeg',
